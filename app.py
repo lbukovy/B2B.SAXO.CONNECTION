@@ -1,8 +1,12 @@
-import os
+import os, io, time, random, requests
+import pandas as pd
 import streamlit as st
 
+# musí byť prvý Streamlit príkaz
+st.set_page_config(page_title="B2B | SAXO CONNECTION", layout="wide", page_icon="Saxo-Capital-Markets.png")
+
+# --- PASSWORD GATE ---
 def _load_password():
-    # 1) Skús st.secrets (Render/Cloud), 2) potom env var (APP_PASSWORD), 3) inak prázdne
     try:
         return st.secrets["APP_PASSWORD"]
     except Exception:
@@ -11,19 +15,17 @@ def _load_password():
 APP_PASSWORD = _load_password()
 
 def require_password():
-    # Ak nie je nastavené heslo, neblokuj (dev mód)
     if not APP_PASSWORD:
         return
-
     def password_entered():
-        if st.session_state.get("_password", "") == APP_PASSWORD:
+        if st.session_state.get("_password","") == APP_PASSWORD:
             st.session_state["auth_ok"] = True
             st.session_state.pop("_password", None)
         else:
             st.session_state["auth_ok"] = False
-
     if not st.session_state.get("auth_ok", False):
-        st.title("B2B.saxo.connection — Login")
+        st.image("Saxo-Capital-Markets.png", width=120)
+        st.markdown("### B2B.saxo.connection — Login")
         st.text_input("Password", type="password", key="_password", on_change=password_entered)
         if st.session_state.get("auth_ok") is False:
             st.error("Nesprávne heslo.")
@@ -31,19 +33,17 @@ def require_password():
 
 require_password()
 
-import streamlit as st
-import pandas as pd
-import requests
-from io import BytesIO
-import time
-import random
-
 # --- CONFIGURATION ---
-EXCEL_URL = "https://saxoconnection.com/data/FIX_API_CT147572INET.xlsx"
+def _load_excel_url():
+    try:
+        return st.secrets["EXCEL_URL"]             # Render → Environment (odporúčané)
+    except Exception:
+        return os.getenv("EXCEL_URL", "https://data.saxoconnection.com/FIX_API_CT147572INET.xlsx")
+
+EXCEL_URL = _load_excel_url()
 LOGO_PATH = "Saxo-Capital-Markets.png"
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="B2B | SAXO CONNECTION", layout="wide")
+# --- HEADER ---
 st.image(LOGO_PATH, width=150)
 st.title("B2B.SAXO.CONNECTION")
 st.caption("Secure data viewer for banking & account structure")
@@ -51,14 +51,13 @@ st.caption("Secure data viewer for banking & account structure")
 # --- INPUT ---
 query = st.text_input("Enter your query (e.g. STATUS ABC123, CLIENT/ACCOUNT 147572INET/C...) ")
 
-# --- FUNCTION TO LOAD DATA ---
+# --- DATA LOADER ---
 @st.cache_data(ttl=300)
 def load_excel():
-    response = requests.get(EXCEL_URL, verify=False)
-    xls = pd.ExcelFile(BytesIO(response.content))
-    sheets = {sheet: xls.parse(sheet, dtype=str) for sheet in xls.sheet_names}
-
-    return sheets
+    r = requests.get(EXCEL_URL, timeout=20)     # verify=True (default)
+    r.raise_for_status()
+    xls = pd.ExcelFile(io.BytesIO(r.content), engine="openpyxl")
+    return {sheet: xls.parse(sheet, dtype=str) for sheet in xls.sheet_names}
 
 # --- SIMULATED LOADING ---
 def simulated_loading():
@@ -69,9 +68,10 @@ def simulated_loading():
 # --- MAIN LOGIC ---
 def handle_query(query):
     sheets = load_excel()
-    query = query.strip()
-    if query.startswith("STATUS "):
-        ref = query.replace("STATUS ", "").strip()
+    q = query.strip()
+
+    if q.startswith("STATUS "):
+        ref = q.replace("STATUS ", "").strip()
         for df in sheets.values():
             if "Reference" in df.columns and "Status" in df.columns:
                 row = df[df["Reference"] == ref]
@@ -80,8 +80,8 @@ def handle_query(query):
                     return
         st.error("No matching reference found.")
 
-    elif query.startswith("ACCOUNT "):
-        val = query.replace("ACCOUNT ", "").strip()
+    elif q.startswith("ACCOUNT "):
+        val = q.replace("ACCOUNT ", "").strip()
         for df in sheets.values():
             if val in df.values:
                 row = df[df.apply(lambda x: val in x.values, axis=1)]
@@ -89,8 +89,8 @@ def handle_query(query):
                 return
         st.error("No matching IP address found.")
 
-    elif query.startswith("CLIENT/ACCOUNT "):
-        val = query.replace("CLIENT/ACCOUNT ", "").strip()
+    elif q.startswith("CLIENT/ACCOUNT "):
+        val = q.replace("CLIENT/ACCOUNT ", "").strip()
         for df in sheets.values():
             if val in df.values:
                 row = df[df.apply(lambda x: val in x.values, axis=1)]
@@ -98,8 +98,8 @@ def handle_query(query):
                 return
         st.error("No matching account info found.")
 
-    elif query.startswith("CLIENT "):
-        val = query.replace("CLIENT ", "").strip()
+    elif q.startswith("CLIENT "):
+        val = q.replace("CLIENT ", "").strip()
         for df in sheets.values():
             if val in df.values:
                 row = df[df.apply(lambda x: val in x.values, axis=1)]
@@ -107,13 +107,12 @@ def handle_query(query):
                 return
         st.error("No matching client found.")
 
-
-    elif query.strip().replace(" ", "").upper() == "TRADELIST":
+    elif q.strip().replace(" ", "").upper() == "TRADELIST":
         if "TRADELIST" in sheets:
             df = sheets["TRADELIST"]
             df["Instrument"] = df["Instrument"].astype(str).str.replace(".lmx", "", regex=False)
             st.subheader("Trade List")
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
         else:
             st.error("Sheet 'TRADELIST' not found in the Excel file.")
 
